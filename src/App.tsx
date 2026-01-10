@@ -112,7 +112,8 @@ interface ChecklistData {
   // 5. Tech & Power
   lineType: 'LTD3' | 'Connectable' | 'No';
   threePhase: Answer;
-  capacity14kw: Answer;
+  // UPDATED: Changed from capacity14kw (Yes/No) to exact load
+  capacityLoad: string; 
   grounding: Answer;
   pointIdentified: Answer;
   meterPic: Answer;
@@ -170,7 +171,6 @@ interface SiteData {
     picPhone: string;
   };
 
-  // NEW: Deployment Data (SOP 6.5)
   deployment?: {
     cabinetSerial: string;
     batteryCount: string;
@@ -189,7 +189,10 @@ const calculateSectionStatus = (c: ChecklistData) => {
   const demand = c.avgIncome && c.ridersInGarage ? 'Y' : 'N';
   const road = (c.mainRoadAccessible === 'Yes') ? 'Y' : 'N';
   const flood = (c.noFloodHistory === 'Yes' && c.notLowLying === 'Yes') ? 'Y' : 'N';
-  const power = (c.threePhase === 'Yes' && c.capacity14kw === 'Yes') ? 'Y' : 'N';
+  
+  // UPDATED LOGIC: Power is Y if 3-Phase is Yes AND Capacity is entered (not empty/0)
+  const power = (c.threePhase === 'Yes' && c.capacityLoad && parseFloat(c.capacityLoad) > 0) ? 'Y' : 'N';
+  
   const outages = (c.noFrequentOutages === 'Yes') ? 'Y' : 'N';
   const install = (c.spaceVentilation === 'Yes') ? 'Y' : 'N';
   const commercial = (c.ownerWilling === 'Yes') ? 'Y' : 'N';
@@ -206,6 +209,7 @@ const generateWhatsAppReport = (site: SiteData) => {
   return `
 "[SITE] ${site.siteId}"
 ${summaryLine}
+Capacity: ${c.capacityLoad} kW
 Notes: ${c.roadNotes || c.concerns || 'None'}
 Assessor: Operator
 Date: ${new Date().toLocaleDateString()}
@@ -1242,7 +1246,8 @@ function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
          {openSection === 5 && <div className="p-4 bg-slate-50 border-t border-slate-100">
             <ReadOnlyField label="Line Type" value={data.lineType} />
             <ReadOnlyField label="3-Phase" value={data.threePhase} />
-            <ReadOnlyField label="Capacity" value={data.capacity14kw} />
+            {/* UPDATED: Display Load instead of Y/N */}
+            <ReadOnlyField label="Available Load (kW)" value={data.capacityLoad} />
             <ReadOnlyField label="Grounding" value={data.grounding} />
             <ReadOnlyField label="Point ID" value={data.pointIdentified} />
             <ReadOnlyField label="Meter Pic" value={data.meterPic} />
@@ -1301,7 +1306,7 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
     floodEvidence: 'Photo',
     lineType: 'LTD3',
     threePhase: '',
-    capacity14kw: '',
+    capacityLoad: '',
     grounding: '',
     pointIdentified: '',
     meterPic: '',
@@ -1431,7 +1436,14 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
           <div className="animate-in fade-in slide-in-from-top-2 pt-2">
              <RadioGroup label="LTD3 Line" options={['LTD3', 'Connectable', 'No']} value={data.lineType} onChange={v => setData({...data, lineType: v as any})}/>
              <YesNoSelect label="3-Phase Power Available?" value={data.threePhase} onChange={v => setData({...data, threePhase: v})}/>
-             <YesNoSelect label="Capacity ≥ 14kW?" value={data.capacity14kw} onChange={v => setData({...data, capacity14kw: v})}/>
+             {/* UPDATED: Replaced YesNoSelect with InputField for exact capacity */}
+             <InputField 
+                label="Available Load Capacity (kW)" 
+                value={data.capacityLoad} 
+                onChange={(v: string) => setData({...data, capacityLoad: v})} 
+                type="number" 
+                placeholder="e.g. 15"
+             />
              <YesNoSelect label="Grounding Feasible?" value={data.grounding} onChange={v => setData({...data, grounding: v})}/>
              <YesNoSelect label="Connection Point ID'd?" value={data.pointIdentified} onChange={v => setData({...data, pointIdentified: v})}/>
              <YesNoSelect label="Meter Photo Taken?" value={data.meterPic} onChange={v => setData({...data, meterPic: v})}/>
