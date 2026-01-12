@@ -51,6 +51,7 @@ import {
 } from 'lucide-react';
 
 // --- Configuration ---
+// --- Configuration ---
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCCY-p7VgnLI4w6QSz7AaW2vSAxwRHNMJI",
   authDomain: "tiger-tracks-a2687.firebaseapp.com",
@@ -654,9 +655,9 @@ export default function App() {
   // Login Screen
   if (!role) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
+      <div className="min-h-[100dvh] flex flex-col items-center justify-center bg-slate-50 p-6">
         <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
-          <img src="/logo.png" alt="Logo" className="w-40 h-40 mx-auto mb-6 object-contain" />
+          <img src="/logo.png" alt="Logo" className="w-40 h-40 mx-auto mb-2 object-contain" />
           
           <h1 className="text-2xl font-bold text-slate-800 mb-2">Site Acquisition Login</h1>
           <p className="text-slate-500 text-sm mb-6">Enter your 4-digit ID to continue.</p>
