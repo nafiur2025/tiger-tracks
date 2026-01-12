@@ -59,6 +59,7 @@ const FIREBASE_CONFIG = {
   measurementId: "G-TQLND10HMB"
 };
 const APP_ID = 'tiger-tracks';
+const ADMIN_CODE = '760452'; // Changeable Admin Code for Deletion
 
 // --- Firebase Init ---
 const app = initializeApp(FIREBASE_CONFIG);
@@ -310,6 +311,8 @@ const Card = ({ children, className = '', onClick, onLongPress }: CardProps) => 
       onTouchStart={startPress}
       onTouchEnd={endPress}
       onClick={handleClick}
+      // Prevent default context menu on long press to improve UX
+      onContextMenu={(e) => { if (onLongPress) e.preventDefault(); }}
       className={`bg-white rounded-xl shadow-sm border border-slate-100 p-4 ${className} ${onClick ? 'active:scale-95 transition-transform cursor-pointer select-none' : ''}`}
     >
       {children}
