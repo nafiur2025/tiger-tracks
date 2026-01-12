@@ -38,7 +38,8 @@ import {
   ClipboardList,
   AlertTriangle,
   Server,
-  Monitor
+  Monitor,
+  Locate
 } from 'lucide-react';
 
 // --- Configuration ---
@@ -84,6 +85,7 @@ interface ChecklistData {
   // 1. Basic
   siteType: string;
   ownershipProof: 'Yes' | 'No' | 'Pending';
+  gpsCoordinates: string; // NEW: GPS Field
   photos: {
     front: boolean;
     entrance: boolean;
@@ -112,7 +114,6 @@ interface ChecklistData {
   // 5. Tech & Power
   lineType: 'LTD3' | 'Connectable' | 'No';
   threePhase: Answer;
-  // UPDATED: Changed from capacity14kw (Yes/No) to exact load
   capacityLoad: string; 
   grounding: Answer;
   pointIdentified: Answer;
@@ -189,10 +190,7 @@ const calculateSectionStatus = (c: ChecklistData) => {
   const demand = c.avgIncome && c.ridersInGarage ? 'Y' : 'N';
   const road = (c.mainRoadAccessible === 'Yes') ? 'Y' : 'N';
   const flood = (c.noFloodHistory === 'Yes' && c.notLowLying === 'Yes') ? 'Y' : 'N';
-  
-  // UPDATED LOGIC: Power is Y if 3-Phase is Yes AND Capacity is entered (not empty/0)
   const power = (c.threePhase === 'Yes' && c.capacityLoad && parseFloat(c.capacityLoad) > 0) ? 'Y' : 'N';
-  
   const outages = (c.noFrequentOutages === 'Yes') ? 'Y' : 'N';
   const install = (c.spaceVentilation === 'Yes') ? 'Y' : 'N';
   const commercial = (c.ownerWilling === 'Yes') ? 'Y' : 'N';
@@ -210,6 +208,7 @@ const generateWhatsAppReport = (site: SiteData) => {
 "[SITE] ${site.siteId}"
 ${summaryLine}
 Capacity: ${c.capacityLoad} kW
+GPS: ${c.gpsCoordinates || 'N/A'}
 Notes: ${c.roadNotes || c.concerns || 'None'}
 Assessor: Operator
 Date: ${new Date().toLocaleDateString()}
@@ -1205,6 +1204,8 @@ function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
          {openSection === 1 && <div className="p-4 bg-slate-50 border-t border-slate-100">
             <ReadOnlyField label="Site Type" value={data.siteType} />
             <ReadOnlyField label="Ownership Proof" value={data.ownershipProof} />
+            {/* NEW: Display GPS in Read Only View */}
+            <ReadOnlyField label="GPS Location" value={data.gpsCoordinates} />
             <div className="text-xs font-bold text-slate-400 uppercase mb-1">Photos</div>
             <div className="flex flex-wrap gap-1">
               {Object.entries(data.photos).map(([k,v]) => v && <span key={k} className="bg-white border px-2 py-1 rounded text-xs text-slate-600 capitalize">{k}</span>)}
@@ -1246,7 +1247,6 @@ function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
          {openSection === 5 && <div className="p-4 bg-slate-50 border-t border-slate-100">
             <ReadOnlyField label="Line Type" value={data.lineType} />
             <ReadOnlyField label="3-Phase" value={data.threePhase} />
-            {/* UPDATED: Display Load instead of Y/N */}
             <ReadOnlyField label="Available Load (kW)" value={data.capacityLoad} />
             <ReadOnlyField label="Grounding" value={data.grounding} />
             <ReadOnlyField label="Point ID" value={data.pointIdentified} />
@@ -1292,6 +1292,7 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
   const [data, setData] = useState<ChecklistData>(initialData || {
     siteType: 'Workshop',
     ownershipProof: 'Pending',
+    gpsCoordinates: '', // Init GPS
     photos: { front: false, entrance: false, installSpot: false, meter: false, roads: false },
     riderType: [],
     avgIncome: '',
@@ -1328,6 +1329,38 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
   const [openSection, setOpenSection] = useState<number>(1);
   const toggleSection = (i: number) => setOpenSection(openSection === i ? 0 : i);
 
+  // New: GPS Handling
+  const [loadingLoc, setLoadingLoc] = useState(false);
+  const handleGetLocation = () => {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser");
+      return;
+    }
+    setLoadingLoc(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = `${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`;
+        setData({...data, gpsCoordinates: coords});
+        setLoadingLoc(false);
+      },
+      () => {
+        alert("Unable to retrieve your location. Please check browser permissions.");
+        setLoadingLoc(false);
+      }
+    );
+  };
+
+  const handleCopyGPS = () => {
+    if (!data.gpsCoordinates) return;
+    const textArea = document.createElement("textarea");
+    textArea.value = data.gpsCoordinates;
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textArea);
+    alert("GPS copied!");
+  }
+
   return (
     <div className="space-y-4 pb-20">
       <h3 className="text-lg font-bold text-slate-800 px-1">Site Assessment Checklist</h3>
@@ -1348,6 +1381,34 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
               value={data.ownershipProof}
               onChange={(v) => setData({...data, ownershipProof: v as any})}
             />
+            
+            {/* New GPS Section */}
+            <div className="mb-4">
+               <div className="text-xs font-bold text-slate-500 uppercase mb-1">GPS Location</div>
+               <div className="flex gap-2">
+                 <input 
+                   readOnly
+                   value={data.gpsCoordinates}
+                   placeholder="Lat, Long"
+                   className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-600"
+                 />
+                 <button 
+                   onClick={handleGetLocation} 
+                   disabled={loadingLoc}
+                   className="bg-blue-600 text-white px-3 py-2 rounded-lg flex items-center justify-center disabled:opacity-50"
+                 >
+                   {loadingLoc ? <Activity className="animate-spin w-4 h-4"/> : <Locate size={18} />}
+                 </button>
+                 <button 
+                   onClick={handleCopyGPS}
+                   disabled={!data.gpsCoordinates}
+                   className="bg-slate-100 text-slate-600 border border-slate-200 px-3 py-2 rounded-lg disabled:opacity-50"
+                 >
+                   <Copy size={18} />
+                 </button>
+               </div>
+            </div>
+
             <div className="mt-3">
                <div className="text-xs font-bold text-slate-500 uppercase mb-2">Photos Taken</div>
                <div className="grid grid-cols-2 gap-2">
@@ -1436,7 +1497,6 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
           <div className="animate-in fade-in slide-in-from-top-2 pt-2">
              <RadioGroup label="LTD3 Line" options={['LTD3', 'Connectable', 'No']} value={data.lineType} onChange={v => setData({...data, lineType: v as any})}/>
              <YesNoSelect label="3-Phase Power Available?" value={data.threePhase} onChange={v => setData({...data, threePhase: v})}/>
-             {/* UPDATED: Replaced YesNoSelect with InputField for exact capacity */}
              <InputField 
                 label="Available Load Capacity (kW)" 
                 value={data.capacityLoad} 
