@@ -44,7 +44,8 @@ import {
   Locate,
   Image as ImageIcon,
   X,
-  Eye
+  Eye,
+  Trash2
 } from 'lucide-react';
 
 // --- Configuration ---
@@ -272,14 +273,49 @@ const resizeImage = (file: File): Promise<string> => {
 
 // --- Components ---
 
-const Card = ({ children, className = '', onClick }: { children: React.ReactNode, className?: string, onClick?: () => void }) => (
-  <div 
-    onClick={onClick}
-    className={`bg-white rounded-xl shadow-sm border border-slate-100 p-4 ${className} ${onClick ? 'active:scale-95 transition-transform cursor-pointer' : ''}`}
-  >
-    {children}
-  </div>
-);
+interface CardProps {
+  children: React.ReactNode;
+  className?: string;
+  onClick?: () => void;
+  onLongPress?: () => void;
+}
+
+const Card = ({ children, className = '', onClick, onLongPress }: CardProps) => {
+  const timerRef = useRef<any>(null);
+  const isLongPress = useRef(false);
+
+  const startPress = () => {
+    isLongPress.current = false;
+    timerRef.current = setTimeout(() => {
+      isLongPress.current = true;
+      if (onLongPress) onLongPress();
+    }, 800); // 800ms threshold for long press
+  };
+
+  const endPress = () => {
+    clearTimeout(timerRef.current);
+  };
+
+  const handleClick = () => {
+    if (!isLongPress.current && onClick) {
+      onClick();
+    }
+  };
+
+  return (
+    <div 
+      onMouseDown={startPress}
+      onMouseUp={endPress}
+      onMouseLeave={endPress}
+      onTouchStart={startPress}
+      onTouchEnd={endPress}
+      onClick={handleClick}
+      className={`bg-white rounded-xl shadow-sm border border-slate-100 p-4 ${className} ${onClick ? 'active:scale-95 transition-transform cursor-pointer select-none' : ''}`}
+    >
+      {children}
+    </div>
+  );
+};
 
 const SectionHeader = ({ title, isOpen, toggle }: { title: string, isOpen: boolean, toggle: () => void }) => (
   <button 
@@ -555,6 +591,25 @@ export default function App() {
     }
   };
 
+  // Delete Site Logic
+  const handleDeleteSite = async (siteId: string, siteName: string) => {
+    const code = window.prompt(`To DELETE "${siteName}", enter the Admin Code:`);
+    if (code === ADMIN_CODE) {
+      if (window.confirm(`Are you sure you want to permanently delete ${siteName}? This cannot be undone.`)) {
+        try {
+          await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sites', siteId));
+          // Photos are in a separate collection, technically should be deleted too but for simplicity in this no-cloud-function setup, we leave them orphant.
+          alert("Site deleted successfully.");
+        } catch (e) {
+          console.error("Error deleting site:", e);
+          alert("Error deleting site.");
+        }
+      }
+    } else if (code !== null) {
+      alert("Incorrect Admin Code.");
+    }
+  };
+
   // Views
   if (!user || loading) return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-400">
@@ -600,7 +655,7 @@ export default function App() {
                <div className="min-w-[100px] bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
                  <div className="text-slate-400 text-xs font-medium uppercase">Pending</div>
                  <div className="text-2xl font-bold text-slate-700">
-                   {sites.filter(s => ['lead', 'submitted', 'visit_proposed', 'visit_confirmed', 'tech_visit'].includes(s.status)).length}
+                   {sites.filter(s => ['lead', 'checklist_done', 'submitted', 'visit_proposed', 'visit_confirmed', 'tech_visit'].includes(s.status)).length}
                  </div>
                </div>
                <div className="min-w-[100px] bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
@@ -613,7 +668,11 @@ export default function App() {
 
             <div className="space-y-3">
               {sites.map(site => (
-                <Card key={site.id} onClick={() => { setSelectedSite(site); setView('detail'); }}>
+                <Card 
+                  key={site.id} 
+                  onClick={() => { setSelectedSite(site); setView('detail'); }}
+                  onLongPress={() => handleDeleteSite(site.id, site.siteId)}
+                >
                   <div className="flex justify-between items-start mb-2">
                     <span className="font-mono text-xs font-bold text-slate-400">{site.siteId}</span>
                     <StatusBadge status={site.status} />
@@ -1325,14 +1384,6 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
              <Card className="text-center py-6 bg-slate-50 border-slate-100">
                <Server className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                <p className="text-sm text-slate-500 font-bold">Contract ready. Waiting for Tiger to deploy & activate...</p>
-             </Card>
-           )}
-
-            {/* Operator Waiting View for Activation */}
-           {site.status === 'contract_ready' && role === 'operator' && (
-             <Card className="text-center py-6 bg-slate-50 border-slate-100">
-               <Server className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-               <p className="text-sm text-slate-500 font-bold">Contract signed. Waiting for Tiger to deploy & activate...</p>
              </Card>
            )}
 
