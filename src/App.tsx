@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -12,10 +12,12 @@ import {
   collection, 
   addDoc, 
   query, 
+  where,
   onSnapshot, 
   doc, 
   updateDoc, 
-  serverTimestamp
+  serverTimestamp,
+  deleteDoc
 } from 'firebase/firestore';
 import { 
   Plus, 
@@ -39,7 +41,10 @@ import {
   AlertTriangle,
   Server,
   Monitor,
-  Locate
+  Locate,
+  Image as ImageIcon,
+  X,
+  Eye
 } from 'lucide-react';
 
 // --- Configuration ---
@@ -81,17 +86,27 @@ type SiteStatus =
   | 'installed'     
   | 'operational';  
 
+interface PhotoData {
+  id?: string;
+  category: string; // 'Front', 'Entrance', 'Additional', etc.
+  base64: string;
+  timestamp: any;
+}
+
 interface ChecklistData {
   // 1. Basic
   siteType: string;
   ownershipProof: 'Yes' | 'No' | 'Pending';
-  gpsCoordinates: string; // NEW: GPS Field
-  photos: {
+  gpsCoordinates: string;
+  // Photos are now tracked by simple boolean flags in the main doc for summary, 
+  // but actual data is in sub-collection/separate collection.
+  photosTaken: {
     front: boolean;
     entrance: boolean;
     installSpot: boolean;
     meter: boolean;
     roads: boolean;
+    additional: number;
   };
   
   // 2. Riders & Demand
@@ -229,6 +244,32 @@ Owner readiness confirmed by: Operator
 `.trim();
 };
 
+// --- Utilities ---
+
+// Resize image to avoid Firestore 1MB limit. Returns Base64.
+const resizeImage = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800; 
+        const scaleSize = MAX_WIDTH / img.width;
+        canvas.width = MAX_WIDTH;
+        canvas.height = img.height * scaleSize;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7)); // Compress to 70% quality JPEG
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
 // --- Components ---
 
 const Card = ({ children, className = '', onClick }: { children: React.ReactNode, className?: string, onClick?: () => void }) => (
@@ -310,6 +351,94 @@ const ReadOnlyField = ({ label, value }: { label: string, value: string }) => (
     <div className="text-sm font-medium text-slate-800 break-words">{value || '-'}</div>
   </div>
 );
+
+// --- New Photo Component ---
+const PhotoCapture = ({ label, category, siteId, onPhotoTaken }: { label: string, category: string, siteId: string, onPhotoTaken: () => void }) => {
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check if photo exists on load
+  useEffect(() => {
+    if(!siteId) return;
+    const q = query(
+      collection(db, 'artifacts', APP_ID, 'public', 'data', 'photos'),
+      where('siteId', '==', siteId),
+      where('category', '==', category)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      if (!snap.empty) {
+        setPreview(snap.docs[0].data().base64);
+      }
+    });
+    return () => unsub();
+  }, [siteId, category]);
+
+  const handleCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    try {
+      const base64 = await resizeImage(file);
+      
+      // Save to separate photos collection
+      await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'photos'), {
+        siteId,
+        category,
+        base64,
+        timestamp: serverTimestamp()
+      });
+      
+      setPreview(base64);
+      onPhotoTaken(); // Callback to update parent checklist state
+    } catch (err) {
+      console.error(err);
+      alert("Failed to save photo. Try a smaller image.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-2">
+      <div className="flex justify-between items-center mb-2">
+        <span className="text-xs font-bold text-slate-700 uppercase">{label}</span>
+        {preview && <span className="text-xs text-green-600 font-bold flex items-center gap-1"><CheckCircle size={12}/> Saved</span>}
+      </div>
+      
+      {preview ? (
+        <div className="relative">
+          <img src={preview} alt={label} className="w-full h-32 object-cover rounded-lg" />
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded backdrop-blur-sm"
+          >
+            Retake
+          </button>
+        </div>
+      ) : (
+        <button 
+          onClick={() => fileInputRef.current?.click()}
+          disabled={loading}
+          className="w-full h-24 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center text-slate-400 hover:border-blue-400 hover:text-blue-500 transition-colors"
+        >
+          {loading ? <Activity className="animate-spin"/> : <Camera size={24} />}
+          <span className="text-xs font-bold mt-1">Tap to Capture</span>
+        </button>
+      )}
+      
+      <input 
+        type="file" 
+        ref={fileInputRef}
+        accept="image/*" 
+        capture="environment" // Use rear camera on mobile
+        className="hidden" 
+        onChange={handleCapture}
+      />
+    </div>
+  );
+};
 
 const StatusBadge = ({ status }: { status: SiteStatus }) => {
   const styles: Record<SiteStatus, string> = {
@@ -625,6 +754,7 @@ function CreateSiteForm({ onCancel, onSubmit }: { onCancel: () => void, onSubmit
 
 function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: Role, onUpdateStatus: any }) {
   const [scheduleDate, setScheduleDate] = useState('');
+  const [showChecklist, setShowChecklist] = useState(false);
   
   // Tech Assessment Form State
   const [techForm, setTechForm] = useState(site.techAssessment || {
@@ -711,7 +841,7 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
 
   // --- Renders ---
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
       
       {/* 1. Status Tracker */}
       <div className="flex items-center justify-between px-2">
@@ -738,9 +868,38 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
         </div>
       </Card>
 
+      {/* NEW: Floating "View Checklist Data" Button */}
+      {site.checklist && (
+        <>
+          <button 
+            onClick={() => setShowChecklist(true)}
+            className="fixed bottom-24 right-4 bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-full shadow-lg font-bold flex items-center gap-2 z-20"
+          >
+            <ClipboardList size={18} /> 📋 Site Data
+          </button>
+
+          {/* Slide-over Drawer for Checklist View */}
+          {showChecklist && (
+            <div className="fixed inset-0 z-50 flex justify-end">
+               <div className="absolute inset-0 bg-black/50" onClick={() => setShowChecklist(false)} />
+               <div className="relative w-full max-w-md bg-white h-full shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300">
+                  <div className="sticky top-0 bg-white p-4 border-b border-slate-100 flex justify-between items-center z-10">
+                     <h3 className="font-bold text-slate-800 text-lg">Site Checklist Data</h3>
+                     <button onClick={() => setShowChecklist(false)} className="p-2 bg-slate-100 rounded-full"><X size={20}/></button>
+                  </div>
+                  <div className="p-4">
+                     <ReadOnlyChecklist data={site.checklist} siteId={site.id} />
+                  </div>
+               </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* --- STAGE B: Operator Detailed Checklist --- */}
       {site.status === 'lead' && role === 'operator' && (
         <ChecklistForm 
+          siteId={site.id}
           initialData={site.checklist} 
           onSubmit={(data) => onUpdateStatus(site.id, 'checklist_done', { checklist: data })}
         />
@@ -770,15 +929,16 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
       {/* --- STAGE C.1: Tiger Review & Schedule --- */}
       {site.status === 'submitted' && role === 'tiger' && (
         <div className="space-y-4">
-           <div className="border-l-4 border-indigo-500 pl-4 py-2">
-             <h3 className="font-bold text-indigo-900 text-lg">1. Review Checklist</h3>
-             <p className="text-sm text-indigo-700">Review all details before scheduling.</p>
+           <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex items-start gap-3">
+             <div className="bg-blue-100 p-2 rounded-full text-blue-600 mt-1"><Eye size={18}/></div>
+             <div>
+               <h3 className="font-bold text-blue-900">Review Data</h3>
+               <p className="text-xs text-blue-700 mb-2">Click the "📋 Site Data" button below to review photos and details before scheduling.</p>
+             </div>
            </div>
-           
-           <ReadOnlyChecklist data={site.checklist!} />
 
            <Card className="border-orange-200 bg-orange-50">
-             <h3 className="font-bold text-orange-900 mb-2">2. Schedule Visit</h3>
+             <h3 className="font-bold text-orange-900 mb-2">Schedule Visit</h3>
              <p className="text-sm text-orange-800 mb-4">If details are okay, propose a time for the visit.</p>
              
              <div className="mb-4">
@@ -1193,9 +1353,22 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
 }
 
 // --- NEW Read Only Checklist Component for Tiger ---
-function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
+function ReadOnlyChecklist({ data, siteId }: { data: ChecklistData, siteId: string }) {
   const [openSection, setOpenSection] = useState<number>(0);
+  const [photos, setPhotos] = useState<PhotoData[]>([]);
   const toggle = (i: number) => setOpenSection(openSection === i ? 0 : i);
+
+  // Fetch photos for read-only view
+  useEffect(() => {
+    if(!siteId) return;
+    const q = query(collection(db, 'artifacts', APP_ID, 'public', 'data', 'photos'), where('siteId', '==', siteId));
+    const unsub = onSnapshot(q, (snap) => {
+      setPhotos(snap.docs.map(d => ({ id: d.id, ...d.data() } as PhotoData)));
+    });
+    return () => unsub();
+  }, [siteId]);
+
+  const getPhotosByCategory = (cat: string) => photos.filter(p => p.category === cat);
 
   return (
     <div className="space-y-2 mb-6">
@@ -1204,11 +1377,20 @@ function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
          {openSection === 1 && <div className="p-4 bg-slate-50 border-t border-slate-100">
             <ReadOnlyField label="Site Type" value={data.siteType} />
             <ReadOnlyField label="Ownership Proof" value={data.ownershipProof} />
-            {/* NEW: Display GPS in Read Only View */}
             <ReadOnlyField label="GPS Location" value={data.gpsCoordinates} />
-            <div className="text-xs font-bold text-slate-400 uppercase mb-1">Photos</div>
-            <div className="flex flex-wrap gap-1">
-              {Object.entries(data.photos).map(([k,v]) => v && <span key={k} className="bg-white border px-2 py-1 rounded text-xs text-slate-600 capitalize">{k}</span>)}
+            
+            <div className="mt-4">
+               <div className="text-xs font-bold text-slate-400 uppercase mb-2">Captured Photos</div>
+               {photos.length === 0 ? <div className="text-xs text-slate-400 italic">No photos uploaded.</div> : (
+                 <div className="grid grid-cols-2 gap-2">
+                   {photos.map(p => (
+                     <div key={p.id} className="relative group">
+                        <img src={p.base64} alt={p.category} className="w-full h-24 object-cover rounded-lg border border-slate-200" />
+                        <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">{p.category}</span>
+                     </div>
+                   ))}
+                 </div>
+               )}
             </div>
          </div>}
       </Card>
@@ -1288,12 +1470,12 @@ function ReadOnlyChecklist({ data }: { data: ChecklistData }) {
   );
 }
 
-function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData, onSubmit: (d: ChecklistData) => void }) {
+function ChecklistForm({ initialData, siteId, onSubmit }: { initialData?: ChecklistData, siteId: string, onSubmit: (d: ChecklistData) => void }) {
   const [data, setData] = useState<ChecklistData>(initialData || {
     siteType: 'Workshop',
     ownershipProof: 'Pending',
     gpsCoordinates: '', // Init GPS
-    photos: { front: false, entrance: false, installSpot: false, meter: false, roads: false },
+    photosTaken: { front: false, entrance: false, installSpot: false, meter: false, roads: false, additional: 0 },
     riderType: [],
     avgIncome: '',
     ridersInArea: '',
@@ -1361,6 +1543,27 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
     alert("GPS copied!");
   }
 
+  // Update parent state when a photo is uploaded
+  const handlePhotoUploaded = (category: string) => {
+    if (category.startsWith('Additional')) {
+       setData(prev => ({ ...prev, photosTaken: { ...prev.photosTaken, additional: prev.photosTaken.additional + 1 } }));
+    } else {
+       const key = category.toLowerCase().replace(/\s/g, '') as keyof typeof data.photosTaken;
+       // We map 'Front' -> 'front', 'Install Spot' -> 'installspot' etc. need to match keys
+       // Simplification: We just use the known keys
+       let keyName = '';
+       if (category === 'Front') keyName = 'front';
+       if (category === 'Entrance') keyName = 'entrance';
+       if (category === 'Install Spot') keyName = 'installSpot';
+       if (category === 'Meter') keyName = 'meter';
+       if (category === 'Roads') keyName = 'roads';
+       
+       if (keyName) {
+         setData(prev => ({ ...prev, photosTaken: { ...prev.photosTaken, [keyName]: true } }));
+       }
+    }
+  };
+
   return (
     <div className="space-y-4 pb-20">
       <h3 className="text-lg font-bold text-slate-800 px-1">Site Assessment Checklist</h3>
@@ -1409,21 +1612,22 @@ function ChecklistForm({ initialData, onSubmit }: { initialData?: ChecklistData,
                </div>
             </div>
 
-            <div className="mt-3">
-               <div className="text-xs font-bold text-slate-500 uppercase mb-2">Photos Taken</div>
-               <div className="grid grid-cols-2 gap-2">
-                  {Object.keys(data.photos).map((key) => (
-                    <label key={key} className={`flex items-center justify-center p-2 rounded border ${data.photos[key as keyof typeof data.photos] ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-500'}`}>
-                      <input 
-                        type="checkbox" 
-                        className="hidden"
-                        checked={data.photos[key as keyof typeof data.photos]}
-                        onChange={(e) => setData({...data, photos: {...data.photos, [key]: e.target.checked}})}
-                      />
-                      <Camera size={14} className="mr-2"/>
-                      <span className="text-xs font-bold capitalize">{key.replace(/([A-Z])/g, ' $1').trim()}</span>
-                    </label>
-                  ))}
+            <div className="mt-4">
+               <div className="text-xs font-bold text-slate-500 uppercase mb-3">Required Photos</div>
+               <div className="grid grid-cols-2 gap-3">
+                  <PhotoCapture label="Front View" category="Front" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Front')} />
+                  <PhotoCapture label="Entrance" category="Entrance" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Entrance')} />
+                  <PhotoCapture label="Install Spot" category="Install Spot" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Install Spot')} />
+                  <PhotoCapture label="Meter / Panel" category="Meter" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Meter')} />
+                  <PhotoCapture label="Road Access" category="Roads" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Roads')} />
+               </div>
+               
+               <div className="mt-4 pt-4 border-t border-slate-100">
+                  <div className="text-xs font-bold text-slate-500 uppercase mb-2">Additional Photos</div>
+                  <PhotoCapture label="Extra Photo 1" category="Additional 1" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Additional 1')} />
+                  {data.photosTaken.additional >= 1 && (
+                    <PhotoCapture label="Extra Photo 2" category="Additional 2" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Additional 2')} />
+                  )}
                </div>
             </div>
             <button onClick={() => setOpenSection(2)} className="w-full mt-4 py-2 bg-slate-100 text-slate-600 font-bold rounded-lg text-sm">Next Section</button>
