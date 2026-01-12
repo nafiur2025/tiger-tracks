@@ -472,7 +472,7 @@ const StatusBadge = ({ status }: { status: SiteStatus }) => {
     install_confirmed: 'Inst. Confirmed',
     rejected: 'NO-GO ❌',
     deferred: 'DEFER ⏸️',
-    contract_ready: 'Contract Signed',
+    contract_ready: 'Contract Ready',
     installed: 'Installed',
     operational: 'LIVE 🚀',
   };
@@ -1241,12 +1241,12 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
              <div className="flex flex-col gap-2">
                 {role === 'operator' && (
                   <button onClick={() => onUpdateStatus(site.id, 'contract_ready')} className="py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-xl">
-                    Mark Contract Signed
+                    Mark Contract Draft Ready
                   </button>
                 )}
                 {role === 'tiger' && (
                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center text-sm text-slate-500 italic">
-                      Waiting for Operator to sign contract...
+                      Waiting for Operator to prepare contract...
                    </div>
                 )}
              </div>
@@ -1317,6 +1317,14 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
                    Confirm Deployment & Go Live
                  </button>
                </div>
+             </Card>
+           )}
+
+            {/* Operator Waiting View for Activation */}
+           {site.status === 'contract_ready' && role === 'operator' && (
+             <Card className="text-center py-6 bg-slate-50 border-slate-100">
+               <Server className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+               <p className="text-sm text-slate-500 font-bold">Contract ready. Waiting for Tiger to deploy & activate...</p>
              </Card>
            )}
 
