@@ -45,9 +45,12 @@ import {
   Image as ImageIcon,
   X,
   Eye,
-  Trash2
+  Trash2,
+  LogOut,
+  Lock
 } from 'lucide-react';
 
+// --- Configuration ---
 // --- Configuration ---
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCCY-p7VgnLI4w6QSz7AaW2vSAxwRHNMJI",
@@ -61,6 +64,10 @@ const FIREBASE_CONFIG = {
 const APP_ID = 'tiger-tracks';
 const ADMIN_CODE = '760452'; // Changeable Admin Code for Deletion
 
+// Authorized IDs
+const OPERATOR_IDS = ['9116', '3130'];
+const TIGER_IDS = ['3600', '6626'];
+
 // --- Firebase Init ---
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
@@ -68,7 +75,7 @@ const db = getFirestore(app);
 
 // --- Types & SOP Definitions ---
 
-type Role = 'operator' | 'tiger';
+type Role = 'operator' | 'tiger' | null;
 type Answer = 'Yes' | 'No' | 'N/A' | '';
 
 type SiteStatus = 
@@ -90,9 +97,10 @@ type SiteStatus =
 
 interface PhotoData {
   id?: string;
-  category: string; // 'Front', 'Entrance', 'Additional', etc.
+  category: string; 
   base64: string;
   timestamp: any;
+  uploadedBy?: string; // Track who uploaded
 }
 
 interface ChecklistData {
@@ -100,8 +108,6 @@ interface ChecklistData {
   siteType: string;
   ownershipProof: 'Yes' | 'No' | 'Pending';
   gpsCoordinates: string;
-  // Photos are now tracked by simple boolean flags in the main doc for summary, 
-  // but actual data is in sub-collection/separate collection.
   photosTaken: {
     front: boolean;
     entrance: boolean;
@@ -175,18 +181,21 @@ interface SiteData {
     connectivity: boolean;
     risks: string;
     preconditions: string;
+    assessedBy?: string; // Track Assessor
   };
   
   decision?: {
     result: 'GO' | 'NO-GO' | 'DEFER';
     notes: string;
     targetDate?: string;
+    decidedBy?: string; // Track Decision Maker
   };
   
   installation?: {
     date: string;
     picName: string;
     picPhone: string;
+    proposedBy?: string;
   };
 
   deployment?: {
@@ -194,7 +203,11 @@ interface SiteData {
     batteryCount: string;
     dashboardId: string;
     deployedAt: any;
+    deployedBy?: string; // Track Installer
   };
+
+  createdBy?: string; // Track Creator
+  lastUpdatedBy?: string; // Track Last Editor
 
   createdAt: any;
   updatedAt: any;
@@ -214,7 +227,7 @@ const calculateSectionStatus = (c: ChecklistData) => {
   return { basic, demand, road, flood, power, outages, install, commercial };
 };
 
-const generateWhatsAppReport = (site: SiteData) => {
+const generateWhatsAppReport = (site: SiteData, currentUserId: string) => {
   if (!site.checklist) return '';
   const c = site.checklist;
   const s = calculateSectionStatus(c);
@@ -227,7 +240,7 @@ ${summaryLine}
 Capacity: ${c.capacityLoad} kW
 GPS: ${c.gpsCoordinates || 'N/A'}
 Notes: ${c.roadNotes || c.concerns || 'None'}
-Assessor: Operator
+Assessor: Operator (${currentUserId})
 Date: ${new Date().toLocaleDateString()}
 `.trim();
 };
@@ -243,12 +256,12 @@ Conditions (if any):
 ${site.techAssessment?.preconditions || 'None'}
 Target delivery window: ${d.targetDate || 'TBD'}
 Owner readiness confirmed by: Operator
+Decision By: Tiger (${d.decidedBy || 'Unknown'})
 `.trim();
 };
 
 // --- Utilities ---
 
-// Resize image to avoid Firestore 1MB limit. Returns Base64.
 const resizeImage = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -264,7 +277,7 @@ const resizeImage = (file: File): Promise<string> => {
         canvas.height = img.height * scaleSize;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.7)); // Compress to 70% quality JPEG
+        resolve(canvas.toDataURL('image/jpeg', 0.7)); 
       };
       img.onerror = (err) => reject(err);
     };
@@ -290,7 +303,7 @@ const Card = ({ children, className = '', onClick, onLongPress }: CardProps) => 
     timerRef.current = setTimeout(() => {
       isLongPress.current = true;
       if (onLongPress) onLongPress();
-    }, 800); // 800ms threshold for long press
+    }, 800); 
   };
 
   const endPress = () => {
@@ -311,7 +324,6 @@ const Card = ({ children, className = '', onClick, onLongPress }: CardProps) => 
       onTouchStart={startPress}
       onTouchEnd={endPress}
       onClick={handleClick}
-      // Prevent default context menu on long press to improve UX
       onContextMenu={(e) => { if (onLongPress) e.preventDefault(); }}
       className={`bg-white rounded-xl shadow-sm border border-slate-100 p-4 ${className} ${onClick ? 'active:scale-95 transition-transform cursor-pointer select-none' : ''}`}
     >
@@ -391,13 +403,11 @@ const ReadOnlyField = ({ label, value }: { label: string, value: string }) => (
   </div>
 );
 
-// --- New Photo Component ---
-const PhotoCapture = ({ label, category, siteId, onPhotoTaken }: { label: string, category: string, siteId: string, onPhotoTaken: () => void }) => {
+const PhotoCapture = ({ label, category, siteId, currentUserId, onPhotoTaken }: { label: string, category: string, siteId: string, currentUserId: string, onPhotoTaken: () => void }) => {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Check if photo exists on load
   useEffect(() => {
     if(!siteId) return;
     const q = query(
@@ -421,16 +431,16 @@ const PhotoCapture = ({ label, category, siteId, onPhotoTaken }: { label: string
     try {
       const base64 = await resizeImage(file);
       
-      // Save to separate photos collection
       await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'photos'), {
         siteId,
         category,
         base64,
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        uploadedBy: currentUserId
       });
       
       setPreview(base64);
-      onPhotoTaken(); // Callback to update parent checklist state
+      onPhotoTaken();
     } catch (err) {
       console.error(err);
       alert("Failed to save photo. Try a smaller image.");
@@ -471,7 +481,7 @@ const PhotoCapture = ({ label, category, siteId, onPhotoTaken }: { label: string
         type="file" 
         ref={fileInputRef}
         accept="image/*" 
-        capture="environment" // Use rear camera on mobile
+        capture="environment" 
         className="hidden" 
         onChange={handleCapture}
       />
@@ -526,7 +536,8 @@ const StatusBadge = ({ status }: { status: SiteStatus }) => {
 // 3. Main App Component
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [role, setRole] = useState<Role>('operator');
+  const [role, setRole] = useState<Role>(null); // Start with no role
+  const [userId, setUserId] = useState<string>(''); // Store the 4-digit ID
   const [view, setView] = useState<'list' | 'create' | 'detail'>('list');
   const [sites, setSites] = useState<SiteData[]>([]);
   const [selectedSite, setSelectedSite] = useState<SiteData | null>(null);
@@ -561,6 +572,25 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Login Handler
+  const handleLogin = (inputCode: string) => {
+    if (OPERATOR_IDS.includes(inputCode)) {
+      setRole('operator');
+      setUserId(inputCode);
+    } else if (TIGER_IDS.includes(inputCode)) {
+      setRole('tiger');
+      setUserId(inputCode);
+    } else {
+      alert("Invalid ID. Please try again.");
+    }
+  };
+
+  const handleLogout = () => {
+    setRole(null);
+    setUserId('');
+    setView('list');
+  };
+
   // Actions
   const handleCreateSite = async (formData: any) => {
     if (!user) return;
@@ -569,6 +599,8 @@ export default function App() {
         ...formData,
         status: 'lead',
         checklist: null,
+        createdBy: userId, // Track Creator
+        lastUpdatedBy: userId,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -584,6 +616,7 @@ export default function App() {
       await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sites', siteId), {
         status: newStatus,
         updatedAt: serverTimestamp(),
+        lastUpdatedBy: userId, // Track Updater
         ...additionalData
       });
       if (selectedSite) {
@@ -601,7 +634,6 @@ export default function App() {
       if (window.confirm(`Are you sure you want to permanently delete ${siteName}? This cannot be undone.`)) {
         try {
           await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'sites', siteId));
-          // Photos are in a separate collection, technically should be deleted too but for simplicity in this no-cloud-function setup, we leave them orphant.
           alert("Site deleted successfully.");
         } catch (e) {
           console.error("Error deleting site:", e);
@@ -620,6 +652,32 @@ export default function App() {
     </div>
   );
 
+  // Login Screen
+  if (!role) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
+          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600">
+            <Lock size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800 mb-2">TigerTracks Login</h1>
+          <p className="text-slate-500 text-sm mb-6">Enter your 4-digit ID to continue.</p>
+          
+          <input 
+            type="tel" 
+            maxLength={4}
+            placeholder="0000"
+            className="w-full text-center text-3xl font-mono tracking-widest border-b-2 border-slate-200 focus:border-blue-600 outline-none pb-2 mb-6"
+            onChange={(e) => {
+              if (e.target.value.length === 4) handleLogin(e.target.value);
+            }}
+          />
+          <p className="text-xs text-slate-400">Authorized Personnel Only</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-20">
       
@@ -631,22 +689,24 @@ export default function App() {
               <ArrowLeft className="w-6 h-6 text-slate-600" />
             </button>
           )}
-          <h1 className="text-lg font-bold text-slate-800 truncate max-w-[200px]">
+          <h1 className="text-lg font-bold text-slate-800 truncate max-w-[150px]">
             {view === 'list' ? 'TigerTracks' : view === 'create' ? 'New Site' : selectedSite?.siteId}
           </h1>
         </div>
         
-        <button 
-          onClick={() => setRole(prev => prev === 'operator' ? 'tiger' : 'operator')}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+        <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${
             role === 'operator' 
               ? 'bg-blue-100 text-blue-700 border border-blue-200' 
               : 'bg-orange-100 text-orange-700 border border-orange-200'
-          }`}
-        >
-          {role === 'operator' ? <UserIcon size={14} /> : <Briefcase size={14} />}
-          {role === 'operator' ? 'OPERATOR' : 'TIGER'}
-        </button>
+          }`}>
+            {role === 'operator' ? <UserIcon size={14} /> : <Briefcase size={14} />}
+            <span className="uppercase">{role} ({userId})</span>
+          </div>
+          <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-slate-600">
+            <LogOut size={18} />
+          </button>
+        </div>
       </header>
 
       {/* Main Content Area */}
@@ -685,6 +745,9 @@ export default function App() {
                     <MapPin size={14} />
                     <span className="truncate">{site.address}</span>
                   </div>
+                  <div className="text-[10px] text-slate-400 mt-2 text-right">
+                    By: {site.createdBy || 'Unknown'}
+                  </div>
                 </Card>
               ))}
               {sites.length === 0 && (
@@ -708,6 +771,7 @@ export default function App() {
           <SiteDetailView 
             site={selectedSite} 
             role={role} 
+            currentUserId={userId}
             onUpdateStatus={updateStatus}
           />
         )}
@@ -814,7 +878,7 @@ function CreateSiteForm({ onCancel, onSubmit }: { onCancel: () => void, onSubmit
   );
 }
 
-function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: Role, onUpdateStatus: any }) {
+function SiteDetailView({ site, role, currentUserId, onUpdateStatus }: { site: SiteData, role: Role, currentUserId: string, onUpdateStatus: any }) {
   const [scheduleDate, setScheduleDate] = useState('');
   const [showChecklist, setShowChecklist] = useState(false);
   
@@ -855,7 +919,12 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
 
   // Submit Tech Assessment
   const handleSubmitTechAssessment = () => {
-    onUpdateStatus(site.id, 'decision_pending', { techAssessment: techForm });
+    onUpdateStatus(site.id, 'decision_pending', { 
+      techAssessment: {
+        ...techForm,
+        assessedBy: currentUserId // Track Assessor
+      } 
+    });
   };
 
   // Handle Decision (Go/No-Go)
@@ -865,7 +934,8 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
       decision: { 
         result, 
         notes: '', 
-        targetDate: '3-7 days' 
+        targetDate: '3-7 days',
+        decidedBy: currentUserId // Track Decision Maker
       } 
     });
   };
@@ -877,7 +947,8 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
       installation: {
         date: installDate,
         picName,
-        picPhone
+        picPhone,
+        proposedBy: currentUserId
       }
     });
   };
@@ -896,7 +967,8 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
         cabinetSerial: deployData.cabinetSerial,
         batteryCount: deployData.batteryCount,
         dashboardId: deployData.dashboardId,
-        deployedAt: new Date().toISOString()
+        deployedAt: new Date().toISOString(),
+        deployedBy: currentUserId // Track Installer
       }
     });
   };
@@ -962,6 +1034,7 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
       {site.status === 'lead' && role === 'operator' && (
         <ChecklistForm 
           siteId={site.id}
+          currentUserId={currentUserId}
           initialData={site.checklist} 
           onSubmit={(data) => onUpdateStatus(site.id, 'checklist_done', { checklist: data })}
         />
@@ -974,7 +1047,7 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
             <p className="text-sm text-slate-500 mb-4">Checklist complete. Share to WhatsApp group to request Tiger visit.</p>
             
             <button 
-              onClick={() => copyToClipboard(generateWhatsAppReport(site))}
+              onClick={() => copyToClipboard(generateWhatsAppReport(site, currentUserId))}
               className="w-full flex items-center justify-center gap-2 py-3 bg-green-500 text-white font-bold rounded-xl mb-3 shadow-lg shadow-green-500/20"
             >
               <Copy size={18} /> Copy WhatsApp Report
@@ -1403,6 +1476,9 @@ function SiteDetailView({ site, role, onUpdateStatus }: { site: SiteData, role: 
                    <p><span className="font-bold text-slate-800">Dashboard ID:</span> {site.deployment?.dashboardId}</p>
                    <p><span className="font-bold text-slate-800">Batteries:</span> {site.deployment?.batteryCount}</p>
                    <p className="text-xs text-slate-400 mt-2">Activated: {site.deployment?.deployedAt ? new Date(site.deployment.deployedAt).toLocaleDateString() : '-'}</p>
+                   {site.deployment?.deployedBy && (
+                     <p className="text-xs text-slate-400">Deployed By: {site.deployment.deployedBy}</p>
+                   )}
                 </div>
              </Card>
            )}
@@ -1449,6 +1525,11 @@ function ReadOnlyChecklist({ data, siteId }: { data: ChecklistData, siteId: stri
                      <div key={p.id} className="relative group">
                         <img src={p.base64} alt={p.category} className="w-full h-24 object-cover rounded-lg border border-slate-200" />
                         <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">{p.category}</span>
+                        {p.uploadedBy && (
+                          <span className="absolute top-1 right-1 bg-white/80 text-slate-800 text-[8px] px-1 py-0.5 rounded border border-slate-200 shadow-sm">
+                            {p.uploadedBy}
+                          </span>
+                        )}
                      </div>
                    ))}
                  </div>
@@ -1532,7 +1613,7 @@ function ReadOnlyChecklist({ data, siteId }: { data: ChecklistData, siteId: stri
   );
 }
 
-function ChecklistForm({ initialData, siteId, onSubmit }: { initialData?: ChecklistData, siteId: string, onSubmit: (d: ChecklistData) => void }) {
+function ChecklistForm({ initialData, siteId, currentUserId, onSubmit }: { initialData?: ChecklistData, siteId: string, currentUserId: string, onSubmit: (d: ChecklistData) => void }) {
   const [data, setData] = useState<ChecklistData>(initialData || {
     siteType: 'Workshop',
     ownershipProof: 'Pending',
@@ -1611,8 +1692,6 @@ function ChecklistForm({ initialData, siteId, onSubmit }: { initialData?: Checkl
        setData(prev => ({ ...prev, photosTaken: { ...prev.photosTaken, additional: prev.photosTaken.additional + 1 } }));
     } else {
        const key = category.toLowerCase().replace(/\s/g, '') as keyof typeof data.photosTaken;
-       // We map 'Front' -> 'front', 'Install Spot' -> 'installspot' etc. need to match keys
-       // Simplification: We just use the known keys
        let keyName = '';
        if (category === 'Front') keyName = 'front';
        if (category === 'Entrance') keyName = 'entrance';
@@ -1677,18 +1756,18 @@ function ChecklistForm({ initialData, siteId, onSubmit }: { initialData?: Checkl
             <div className="mt-4">
                <div className="text-xs font-bold text-slate-500 uppercase mb-3">Required Photos</div>
                <div className="grid grid-cols-2 gap-3">
-                  <PhotoCapture label="Front View" category="Front" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Front')} />
-                  <PhotoCapture label="Entrance" category="Entrance" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Entrance')} />
-                  <PhotoCapture label="Install Spot" category="Install Spot" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Install Spot')} />
-                  <PhotoCapture label="Meter / Panel" category="Meter" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Meter')} />
-                  <PhotoCapture label="Road Access" category="Roads" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Roads')} />
+                  <PhotoCapture label="Front View" category="Front" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Front')} />
+                  <PhotoCapture label="Entrance" category="Entrance" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Entrance')} />
+                  <PhotoCapture label="Install Spot" category="Install Spot" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Install Spot')} />
+                  <PhotoCapture label="Meter / Panel" category="Meter" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Meter')} />
+                  <PhotoCapture label="Road Access" category="Roads" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Roads')} />
                </div>
                
                <div className="mt-4 pt-4 border-t border-slate-100">
                   <div className="text-xs font-bold text-slate-500 uppercase mb-2">Additional Photos</div>
-                  <PhotoCapture label="Extra Photo 1" category="Additional 1" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Additional 1')} />
+                  <PhotoCapture label="Extra Photo 1" category="Additional 1" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Additional 1')} />
                   {data.photosTaken.additional >= 1 && (
-                    <PhotoCapture label="Extra Photo 2" category="Additional 2" siteId={siteId} onPhotoTaken={() => handlePhotoUploaded('Additional 2')} />
+                    <PhotoCapture label="Extra Photo 2" category="Additional 2" siteId={siteId} currentUserId={currentUserId} onPhotoTaken={() => handlePhotoUploaded('Additional 2')} />
                   )}
                </div>
             </div>
