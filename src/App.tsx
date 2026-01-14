@@ -65,7 +65,7 @@ const APP_ID = 'tiger-tracks';
 const ADMIN_CODE = '760452'; // Changeable Admin Code for Deletion
 
 // Authorized IDs
-const OPERATOR_IDS = ['9116', '3130'];
+const OPERATOR_IDS = ['9116', '3130', '1848'];
 const TIGER_IDS = ['3600', '6626'];
 
 // --- Firebase Init ---
